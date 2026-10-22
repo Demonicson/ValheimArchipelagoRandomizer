@@ -2,9 +2,16 @@
 
   <PropertyGroup>
     <TargetFramework>netstandard2.1</TargetFramework>
+    <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
-    <ValheimInstallDir>/home/archipelago/.local/share/Steam/steamapps/common/Valheim</ValheimInstallDir>
+    <ValheimInstallDir Condition="'$(ValheimInstallDir)' == ''">/home/archipelago/.local/share/Steam/steamapps/common/Valheim</ValheimInstallDir>
+    <BepInExDir Condition="'$(BepInExDir)' == ''">$(ValheimInstallDir)/BepInEx</BepInExDir>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="ArchipelagoUI_olld.cs" />
+  </ItemGroup>
+
 
   <ItemGroup>
     <PackageReference Include="Archipelago.MultiClient.Net" Version="6.7.1" />
@@ -12,7 +19,7 @@
 
   <ItemGroup>
     <Reference Include="0Harmony">
-      <HintPath>$(ValheimInstallDir)/BepInEx/core/0Harmony.dll</HintPath>
+      <HintPath>$(BepInExDir)/core/0Harmony.dll</HintPath>
     </Reference>
     <Reference Include="Assembly-CSharp">
       <HintPath>$(ValheimInstallDir)/valheim_Data/Managed/Assembly-CSharp.dll</HintPath>
@@ -27,16 +34,16 @@
       <HintPath>$(ValheimInstallDir)/valheim_Data/Managed/assembly_valheim.dll</HintPath>
     </Reference>
     <Reference Include="BepInEx">
-      <HintPath>$(ValheimInstallDir)/BepInEx/core/BepInEx.dll</HintPath>
+      <HintPath>$(BepInExDir)/core/BepInEx.dll</HintPath>
     </Reference>
     <Reference Include="BepInEx.Harmony">
-      <HintPath>$(ValheimInstallDir)/BepInEx/core/BepInEx.Harmony.dll</HintPath>
+      <HintPath>$(BepInExDir)/core/BepInEx.Harmony.dll</HintPath>
     </Reference>
     <Reference Include="BepInEx.Preloader">
-      <HintPath>$(ValheimInstallDir)/BepInEx/core/BepInEx.Preloader.dll</HintPath>
+      <HintPath>$(BepInExDir)/core/BepInEx.Preloader.dll</HintPath>
     </Reference>
     <Reference Include="Jotunn">
-      <HintPath>$(ValheimInstallDir)/BepInEx/plugins/Jotunn.dll</HintPath>
+      <HintPath>C:\Users\Lucas-Desktop\AppData\Roaming\r2modmanPlus-local\Valheim\profiles\Solo_RandomizerWorld_Test\BepInEx\plugins\Jotunn.dll</HintPath>
     </Reference>
     <Reference Include="Unity.InputSystem">
       <HintPath>$(ValheimInstallDir)/valheim_Data/Managed/Unity.InputSystem.dll</HintPath>

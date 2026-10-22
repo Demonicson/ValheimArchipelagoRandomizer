@@ -1,54 +1,67 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Diagnostics;
 using BepInEx.Logging;
 using HarmonyLib;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 using UnityEngine.Windows;
 
+/// <summary>
+/// Archipelago Connection UI component for Valheim Main Menu.
+/// Optimized to use event-driven scene checking to eliminate per-frame scene graph searching done in prior versions.
+/// </summary>
 public class ArchipelagoUI : MonoBehaviour
 {
-
     // UI state
     private Rect _win = new Rect(30, 80, 420, 260);
     private bool _randomized;
-    private string _host, _slot, _password;
-    private int _port;
+    private string _host = string.Empty;
+    private string _slot = string.Empty;
+    private string _password = string.Empty;
+    private int _port = 38281; // default
 
     // Connection state
     private string _status = "Not connected";
     private bool _connecting = false;
-
-    // Optional: track main menu presence cheaply
-    private float _fejdCheckTimer = 0f;
     private bool _inMainMenu = false;
 
     public void Init()
     {
-        // load config values into fields
-        _randomized = ValheimRandomizer.randomized.Value;
-        _host = ValheimRandomizer.archipelagoHostname.Value;
-        _port = ValheimRandomizer.archipelagoPort.Value;
-        _slot = ValheimRandomizer.archipelagoSlot.Value;
-        _password = ValheimRandomizer.archipelagoPassword.Value;
+        // Load config values into fields
+        if (ValheimRandomizer.randomized != null)
+            _randomized = ValheimRandomizer.randomized.Value;
+        if (ValheimRandomizer.archipelagoHostname != null)
+            _host = ValheimRandomizer.archipelagoHostname.Value ?? string.Empty;
+        if (ValheimRandomizer.archipelagoPort != null)
+            _port = ValheimRandomizer.archipelagoPort.Value;
+        if (ValheimRandomizer.archipelagoSlot != null)
+            _slot = ValheimRandomizer.archipelagoSlot.Value ?? string.Empty;
+        if (ValheimRandomizer.archipelagoPassword != null)
+            _password = ValheimRandomizer.archipelagoPassword.Value ?? string.Empty;
+
+        // Hook scene change events to avoid frame polling
+        SceneManager.sceneLoaded += OnSceneLoaded;
+        CheckActiveScene();
     }
 
-    private void Update()
+    private void OnDestroy()
     {
-        // Poll whether we’re in the FejdStartup (main menu) scene
-        _fejdCheckTimer -= Time.unscaledDeltaTime;
-        if (_fejdCheckTimer <= 0f)
-        {
-            _fejdCheckTimer = 0.5f;
-            _inMainMenu = IsInMainMenu();
-        }
+        SceneManager.sceneLoaded -= OnSceneLoaded;
     }
 
-    private static bool IsInMainMenu()
+    private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
     {
-        // FejdStartup exists only in main menu
-        return UnityEngine.Object.FindFirstObjectByType<FejdStartup>() != null;
+        CheckActiveScene();
+    }
+
+    private void CheckActiveScene()
+    {
+        // Valheim's main menu scene is named "start" so for now we're hard-coding it.
+        string sceneName = SceneManager.GetActiveScene().name;
+        _inMainMenu = string.Equals(sceneName, "start", StringComparison.OrdinalIgnoreCase);
     }
 
     private void OnGUI()
@@ -59,8 +72,14 @@ public class ArchipelagoUI : MonoBehaviour
         var oldColor = GUI.color;
         GUI.color = Color.white;
 
-        _win = GUILayout.Window(GetInstanceID(), _win, DrawWindow, "Archipelago – Valheim Randomizer",
-            GUILayout.ExpandHeight(true), GUILayout.ExpandWidth(true));
+        _win = GUILayout.Window(
+            GetInstanceID(),
+            _win,
+            DrawWindow,
+            "Archipelago – Valheim Randomizer",
+            GUILayout.ExpandHeight(true),
+            GUILayout.ExpandWidth(true)
+        );
 
         GUI.color = oldColor;
     }
@@ -76,7 +95,7 @@ public class ArchipelagoUI : MonoBehaviour
 
         GUILayout.BeginHorizontal();
         GUILayout.Label("Host", GUILayout.Width(60));
-        _host = GUILayout.TextField(_host ?? "", GUILayout.Width(220));
+        _host = GUILayout.TextField(_host ?? string.Empty, GUILayout.Width(220));
         GUILayout.Label("Port", GUILayout.Width(40));
         var portStr = GUILayout.TextField((_port <= 0 ? "" : _port.ToString()), GUILayout.Width(70));
         if (int.TryParse(portStr, out var p)) _port = p;
@@ -84,9 +103,9 @@ public class ArchipelagoUI : MonoBehaviour
 
         GUILayout.BeginHorizontal();
         GUILayout.Label("Slot", GUILayout.Width(60));
-        _slot = GUILayout.TextField(_slot ?? "", GUILayout.Width(140));
+        _slot = GUILayout.TextField(_slot ?? string.Empty, GUILayout.Width(140));
         GUILayout.Label("Password", GUILayout.Width(80));
-        _password = GUILayout.PasswordField(_password ?? "", '*', GUILayout.Width(140));
+        _password = GUILayout.PasswordField(_password ?? string.Empty, '*', GUILayout.Width(140));
         GUILayout.EndHorizontal();
 
         GUILayout.Space(6);
@@ -129,32 +148,32 @@ public class ArchipelagoUI : MonoBehaviour
 
     private void SaveInputs()
     {
-        ValheimRandomizer.randomized.Value = _randomized;
-        ValheimRandomizer.archipelagoHostname.Value = _host ?? "";
-        ValheimRandomizer.archipelagoPort.Value = _port;
-        ValheimRandomizer.archipelagoSlot.Value = _slot ?? "";
-        ValheimRandomizer.archipelagoPassword.Value = _password ?? "";
+        if (ValheimRandomizer.randomized != null)
+            ValheimRandomizer.randomized.Value = _randomized;
+        if (ValheimRandomizer.archipelagoHostname != null)
+            ValheimRandomizer.archipelagoHostname.Value = _host ?? string.Empty;
+        if (ValheimRandomizer.archipelagoPort != null)
+            ValheimRandomizer.archipelagoPort.Value = _port;
+        if (ValheimRandomizer.archipelagoSlot != null)
+            ValheimRandomizer.archipelagoSlot.Value = _slot ?? string.Empty;
+        if (ValheimRandomizer.archipelagoPassword != null)
+            ValheimRandomizer.archipelagoPassword.Value = _password ?? string.Empty;
     }
 
-    private async void StartConnect()
+    private void StartConnect()
     {
-        // Cancel previous attempts if any
-
-
         _connecting = true;
-        _status = "Connected";
+        _status = "Connecting...";
+
         try
         {
             ArchipelagoConnection.Connect(_host, _port, _slot, _password);
-        }
-        catch (OperationCanceledException)
-        {
-            _status = "Canceled";
+            _status = "Connected";
         }
         catch (Exception ex)
         {
             _status = $"Error: {ex.Message}";
-            ValheimRandomizer.Log.LogError($"[AP] Connect error: {ex}");
+            ValheimRandomizer.Log?.LogError($"[AP] Connect error: {ex}");
         }
         finally
         {
@@ -164,6 +183,6 @@ public class ArchipelagoUI : MonoBehaviour
 
     private void Disconnect()
     {
-
+        _status = "Not connected";
     }
 }
