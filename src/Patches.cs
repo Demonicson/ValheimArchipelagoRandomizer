@@ -4,11 +4,12 @@ using System.Linq;
 using System.Reflection;
 using System;
 using UnityEngine;
-using TMPro; // optional, but harmless
+using TMPro;
+using System.Diagnostics; // optional, but harmless
 
 public static class Patches
 {
-    // ---------- Piece (building) gating ----------
+    // ---------- Piece (building) gating ---------- 
     // Patch all Player.HaveRequirements overloads whose first parameter is Piece
     [HarmonyPatch]
     private static class Player_HaveRequirements_Piece_Patch
@@ -24,7 +25,6 @@ public static class Patches
                     return p.Length > 0 && p[0].ParameterType == typeof(Piece);
                 });
         }
-
         // We only need the first parameter (Piece) and __result; Harmony will ignore the rest
         static bool Prefix(Piece piece, ref bool __result)
         {
@@ -35,8 +35,8 @@ public static class Patches
             if (!string.IsNullOrEmpty(id) && RandomizerUtils.CanResearchBeCrafted(id))
             {
                 ValheimRandomizer.Log?.LogDebug($"Blocked building '{id}' (missing research).");
-                __result = false; // pretend requirements not met
-                return false;     // skip original method
+                __result = false; // Pretend requirements not met
+                return false;     // Skip original Valheim requirement check
             }
 
             return true; // run original
@@ -78,33 +78,41 @@ public static class Patches
                 // ignore
             }
 
+            // Uses in-memory cache
             if (!string.IsNullOrEmpty(id) && RandomizerUtils.CanResearchBeCrafted(id))
             {
                 ValheimRandomizer.Log?.LogDebug($"Blocked crafting '{id}' (missing research).");
-                __result = false; // pretend requirements not met
-                return false;     // skip original method
+                __result = false; // Pretend requirements not met
+                return false;     // Skip original method
             }
 
             return true; // run original
         }
     }
 
-
+    // ---------- Research Bench UI Filtering & Display ----------
     [HarmonyPatch(typeof(InventoryGui), "UpdateRecipeList")]
     public class FilterCompletedResearch
     {
         [HarmonyPrefix]
         public static void Prefix(ref List<Recipe> recipes)
         {
+            if (recipes == null) return;
+            var sw = Stopwatch.StartNew(); // debug
+
             if (ValheimRandomizer.hideCompleted.Value)
             {
-                recipes = recipes.Where(recipe => !ValheimRandomizer.IsResearchCrafted(recipe.m_item.name)).ToList();
+                // Null-safe filtering using cached Hashes
+                recipes = recipes.Where(recipe => recipe?.m_item != null && 
+                    !ValheimRandomizer.IsResearchCrafted(recipe.m_item.name)).ToList();
             }
+
+            sw.Stop(); if (sw.Elapsed.TotalMilliseconds > 1.0) { DedicatedLogger.Log($"[PERF SPIKE] UpdateRecipeList Prefix took {sw.Elapsed.TotalMilliseconds:F2} ms"); } //debug
         }
     }
 
     [HarmonyPatch(typeof(InventoryGui), "AddRecipeToList",
-    new Type[] { typeof(Player), typeof(Recipe), typeof(ItemDrop.ItemData), typeof(bool) })]
+        new Type[] { typeof(Player), typeof(Recipe), typeof(ItemDrop.ItemData), typeof(bool) })]
     public static class InventoryGui_AddRecipeToList_Patch
     {
         static void Postfix(
@@ -154,7 +162,7 @@ public static class Patches
         }
     }
 
-    // ========================= Carry weight =========================
+    // ---------- Carry Weight ----------
     [HarmonyPatch(typeof(Player), nameof(Player.GetMaxCarryWeight))]
     private static class Player_GetMaxCarryWeight_Patch
     {
@@ -169,6 +177,7 @@ public static class Patches
         }
     }
 
+    // ---------- Food Stat Bonuses ----------
     [HarmonyPatch]
     internal static class Player_GetTotalFoodValue_Patch
     {
@@ -185,10 +194,10 @@ public static class Patches
             // private void GetTotalFoodValue(out float hp, out float stamina, out float eitr)
             var paramTypes = new[]
             {
-            typeof(float).MakeByRefType(),
-            typeof(float).MakeByRefType(),
-            typeof(float).MakeByRefType()
-        };
+                typeof(float).MakeByRefType(),
+                typeof(float).MakeByRefType(),
+                typeof(float).MakeByRefType()
+            };
             return AccessTools.Method(typeof(Player), "GetTotalFoodValue", paramTypes);
         }
 
@@ -218,6 +227,7 @@ public static class Patches
         }
     }
 
+    // ---------- Adrenaline Boost ----------
     [HarmonyPatch]
     internal static class Player_AddAdrenaline_Patch
     {
@@ -231,15 +241,14 @@ public static class Patches
         {
             if (__instance == null || __instance != Player.m_localPlayer) return;
 
-            int tiers = ValheimRandomizer.GetBoost(
-                ValheimRandomizer.TrophyResearch.TrophyBoost.Adrenaline);
-
+            int tiers = ValheimRandomizer.GetBoost(ValheimRandomizer.TrophyResearch.TrophyBoost.Adrenaline);
             if (tiers <= 0) return;
 
             v += 3f * tiers; // stacks linearly with total unlocked trophy tiers
         }
     }
 
+    // ---------- Status Effect Helpers ----------
     internal static class SEManPatchHelpers
     {
         // SEMan -> Character owner
@@ -264,7 +273,7 @@ public static class Patches
         }
     }
 
-    // ======================= HEALTH REGEN (ref float) =======================
+    // ---------- Health Regeneration (ref float) ----------
     [HarmonyPatch]
     internal static class SEMan_ModifyHealthRegen_RefOnly_Patch
     {
@@ -282,6 +291,7 @@ public static class Patches
         static void Postfix(SEMan __instance, ref float regenMultiplier)
         {
             if (!SEManPatchHelpers.IsLocalPlayer(__instance)) return;
+
             var player = Player.m_localPlayer;
             int foods = SEManPatchHelpers.GetActiveFoodCount(player);
             if (foods <= 0) return;
@@ -293,7 +303,7 @@ public static class Patches
         }
     }
 
-    // ======================= STAMINA REGEN (ref float) =======================
+    // ---------- Stamina Regeneration (ref float) ----------
     [HarmonyPatch]
     internal static class SEMan_ModifyStaminaRegen_RefOnly_Patch
     {
@@ -301,7 +311,6 @@ public static class Patches
 
         static MethodBase TargetMethod()
         {
-            // Try: void ModifyStaminaRegen(ref float regen)
             var param = new[] { typeof(float).MakeByRefType() };
             return AccessTools.Method(typeof(SEMan), "ModifyStaminaRegen", param);
         }
@@ -311,6 +320,7 @@ public static class Patches
         static void Postfix(SEMan __instance, ref float staminaMultiplier)
         {
             if (!SEManPatchHelpers.IsLocalPlayer(__instance)) return;
+
             var player = Player.m_localPlayer;
             int foods = SEManPatchHelpers.GetActiveFoodCount(player);
             if (foods <= 0) return;
@@ -322,19 +332,17 @@ public static class Patches
         }
     }
 
+    // ---------- Defense Armor Boost ----------
     [HarmonyPatch(typeof(Player), nameof(Player.GetBodyArmor))]
     internal static class Player_GetBodyArmor_DefenseBoost_Patch
     {
         private const float DefensePerTier = 0.05f; // +5% per tier
 
-        // Postfix: multiply final armor value
         private static void Postfix(Player __instance, ref float __result)
         {
             if (__instance != Player.m_localPlayer) return;
 
-            int tiers = ValheimRandomizer.GetBoost(
-                ValheimRandomizer.TrophyResearch.TrophyBoost.Defense);
-
+            int tiers = ValheimRandomizer.GetBoost(ValheimRandomizer.TrophyResearch.TrophyBoost.Defense);
             if (tiers <= 0) return;
 
             float mul = 1f + DefensePerTier * tiers;
@@ -342,12 +350,12 @@ public static class Patches
         }
     }
 
+    // ---------- Attack Damage Boost ----------
     [HarmonyPatch(typeof(Character), nameof(Character.Damage))]
     internal static class Character_Damage_AttackBoost_Patch
     {
         private const float AttackPerTier = 0.05f; // +5% per tier
 
-        // Prefix: scale outgoing damage when the attacker is the local player
         private static void Prefix(Character __instance, HitData hit)
         {
             if (hit == null) return;
@@ -355,9 +363,7 @@ public static class Patches
             var attacker = hit.GetAttacker();
             if (!(attacker is Player p) || p != Player.m_localPlayer) return;
 
-            int tiers = ValheimRandomizer.GetBoost(
-                ValheimRandomizer.TrophyResearch.TrophyBoost.Attack);
-
+            int tiers = ValheimRandomizer.GetBoost(ValheimRandomizer.TrophyResearch.TrophyBoost.Attack);
             if (tiers <= 0) return;
 
             float mul = 1f + AttackPerTier * tiers;
@@ -375,6 +381,7 @@ public static class Patches
             dmg.m_lightning *= mul;
             dmg.m_poison *= mul;
             dmg.m_spirit *= mul;
+
             // include tool-like damages in case something uses them offensively
             dmg.m_pickaxe *= mul;
             dmg.m_chop *= mul;

@@ -9,14 +9,45 @@ using System.Collections.Generic;
 using HarmonyLib;
 using System.IO;
 using System.Reflection;
+using System.Diagnostics;
 using System.Xml;
 using static ValheimRandomizer;
+using static Version;
 
 [BepInPlugin(ModGuid, ModName, ModVersion)]
 [BepInDependency(Jotunn.Main.ModGuid)]
 
 public class ValheimRandomizer : BaseUnityPlugin
 {
+    // Memory state caching
+    public static readonly HashSet<String> UnlockedResearchCache = new(StringComparer.OrdinalIgnoreCase);
+    public static readonly HashSet<String> CraftedResearchCache = new(StringComparer.OrdinalIgnoreCase);
+    public static readonly Dictionary<string, string> PrefabToResearchMap = new(StringComparer.OrdinalIgnoreCase);
+
+    private static readonly MethodInfo? UpdateRecipeListMethod = AccessTools.Method(typeof(InventoryGui), "UpdateRecipeList");
+
+    // Call this when loading world, to initialize the cache before using it.
+    public static void InitializeStateCache()
+    {
+        UnlockedResearchCache.Clear();
+        CraftedResearchCache.Clear();
+
+        if (ZoneSystem.instance == null) return; 
+
+        // Populate cache on a world load from ZoneSystem
+        foreach (var key in ZoneSystem.instance.GetGlobalKeys())
+        {
+            if (key.EndsWith("_crafted", StringComparison.OrdinalIgnoreCase))
+            {
+                CraftedResearchCache.Add(key.Substring(0, key.Length - "_crafted".Length));
+            }
+            else 
+            {
+                UnlockedResearchCache.Add(key);
+            }
+        }
+    }
+
     public const string ModGuid = "com.samupo.randomizer";
     public const string ModName = "Randomizer";
     public const string ModVersion = "0.2.6";
@@ -108,6 +139,7 @@ public class ValheimRandomizer : BaseUnityPlugin
             if (currentPlayer != null && currentPlayer.GetInventory() != null)
             {
                 currentPlayer.GetInventory().m_onChanged += OnInventoryChanged;
+                InitializeStateCache();
             }
         }
 
@@ -115,60 +147,98 @@ public class ValheimRandomizer : BaseUnityPlugin
         if (time > 2.0f)
         {
             time = 0.0f;
+
+            // Profile the 2-second network flush tick
+            var sw = Stopwatch.StartNew(); // Debug
             ArchipelagoConnection.TryFlushPendingLocations();
+            sw.Stop(); // Debug
+
+            if (sw.Elapsed.TotalMilliseconds > 1.0) { DedicatedLogger.Log($"[PERF SPIKE] TryFlushPendingLocations() took {sw.Elapsed.TotalMilliseconds:F2} ms"); } // debug
         }
     }
 
-    private void OnInventoryChanged()
-    {
-        foreach (var researchId in research)
+    private void OnInventoryChanged() 
+    { 
+        if (currentPlayer == null || currentPlayer.GetInventory() == null) return;
+
+        var sw = Stopwatch.StartNew(); // debug
+
+        // Single-pass over current inventory to find an item whose "DROP PREFAB name matches our RESEARCH PREFAB ID"
+        var items = currentPlayer.GetInventory().GetAllItems();
+        for (int i = items.Count - 1; i >= 0; i--)
         {
-            // Find an item whose DROP PREFAB name matches our research prefab id
-            var item = currentPlayer.GetInventory().GetAllItems().Find(i => i?.m_dropPrefab != null && i.m_dropPrefab.name == researchId);
-            if (item == null) continue;
+            var item = items[i];
+            var dropName = item?.m_dropPrefab?.name; 
+            if (string.IsNullOrEmpty(dropName)) continue;
 
-            UnlockResearch(researchId);
-            currentPlayer.GetInventory().RemoveItem(item, 1);
-
-            break; // remove one research item per change
-        }
-
-        // New: trophies unlock their research on pickup (not consumed)
-        if (trophyByItemID.Count > 0)
-        {
-            var items = currentPlayer.GetInventory().GetAllItems();
-            foreach (var it in items)
+            // Check against the goal condition selected by the user, in the .yml file for options.
+            if (dropName == $"{Goal}")
             {
-                var dropName = it?.m_dropPrefab?.name;
-                if (string.IsNullOrEmpty(dropName)) continue;
+                ArchipelagoConnection.CompleteGame();
+            }
 
-                if (dropName == $"{Goal}")
-                {
-                    ArchipelagoConnection.CompleteGame();
+            // Dictionary Lookup for Craftable Items (Consumed on pickup)
+            if (PrefabToResearchMap.TryGetValue(dropName, out var researchId)) 
+            { 
+                if (!IsResearchCrafted(researchId)) 
+                { 
+                    UnlockResearch(researchId);
+                    currentPlayer.GetInventory().RemoveItem(item, 1); 
+                    break; // Remove 1 item per inventory update event
                 }
-
-                if (!trophyByItemID.TryGetValue(dropName, out var tr)) continue;
-                if (IsResearchCrafted(tr.researchID)) continue;
-
-                UnlockResearch(tr.researchID);
-                Log?.LogInfo($"Unlocked trophy research '{tr.researchID}' from '{dropName}'.");
-                // Do NOT remove the trophy
+            }
+            
+            // Trophy Passive Boosts (Unlocked on pickup, NOT consumed)
+            if (trophyByItemID.TryGetValue(dropName, out var tr))
+            {
+                if (!IsResearchCrafted(tr.researchID))
+                {
+                    UnlockResearch(tr.researchID);
+                    Log?.LogInfo($"[AP] Unlocked trophy stat research '{tr.researchID}' from '{dropName}'.");
+                }
             }
         }
+
+        sw.Stop(); if (sw.Elapsed.TotalMilliseconds > 1.0) { DedicatedLogger.Log($"[PERF SPIKE] OnInventoryChanged() took {sw.Elapsed.TotalMilliseconds:F2} ms"); } // debug
     }
 
     public static void DoUnlockResearch(string research)
     {
-        Log.LogInfo("Research unlocked: " + research);
-        ZoneSystem.instance.SetGlobalKey(research);
-    }
+        if (string.IsNullOrEmpty(research)) return;
 
+        UnlockedResearchCache.Add(research);
+
+        if (ZoneSystem.instance != null)
+        {
+
+            ZoneSystem.instance.SetGlobalKey(research);
+        }
+
+        // Refresh the crafting workbench/forge UI if open
+        if (InventoryGui.instance != null && UpdateRecipeListMethod != null) 
+        { 
+            try 
+            { 
+                UpdateRecipeListMethod.Invoke(InventoryGui.instance, null); 
+            } catch (Exception ex) {
+                Log?.LogWarning($"[AP] Could not refresh recipe list: {ex.Message}"); 
+            } 
+        }
+
+        Log?.LogInfo($"[AP] Research unlocked: {research}");
+    }
     public static void UnlockResearch(string research)
     {
-        ZoneSystem.instance.SetGlobalKey(research + "_crafted");
+        if (string.IsNullOrEmpty(research)) return; 
+        
+        CraftedResearchCache.Add(research);
+        if (ZoneSystem.instance != null)
+        {
+            ZoneSystem.instance.SetGlobalKey(research + "_crafted");
+        }
         if (randomized.Value)
         {
-            ArchipelagoConnection.SendLocation(research);
+            ArchipelagoConnection.EnqueueLocationCheck(research);
         }
         else
         {
@@ -178,12 +248,14 @@ public class ValheimRandomizer : BaseUnityPlugin
 
     public static bool IsResearchUnlocked(string research)
     {
-        return ZoneSystem.instance.GetGlobalKey(research);
+        if (string.IsNullOrEmpty(research)) return false;
+        return UnlockedResearchCache.Contains(research);
     }
 
-    public static bool IsResearchCrafted(string research)
-    {
-        return ZoneSystem.instance.GetGlobalKey(research + "_crafted");
+    public static bool IsResearchCrafted(string research) 
+    { 
+        if (string.IsNullOrEmpty(research)) return false;
+        return CraftedResearchCache.Contains(research); 
     }
 
     public static void AddResearchRequirement(string itemID, params string[] researches)
@@ -305,7 +377,7 @@ public class ValheimRandomizer : BaseUnityPlugin
 
                 added++;
             }
-
+            foreach (var rid in research) { PrefabToResearchMap[rid] = rid; }
             Logger.LogInfo($"Loaded and registered {added} research definition(s) from {file}.");
         }
         catch (Exception ex)
